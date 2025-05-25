@@ -82,10 +82,21 @@
 ### Приклад виводу (формат console)
 
 Для вузлів (kubectl resource-top nodes):
- TYPE       | NAMESPACE                 | NAME                                     | CPU        | MEMORY -----------|---------------------------|------------------------------------------|------------|------------ nodes      | <cluster>                 | k3d-k3s-default-server-0                 | 71m        | 729Mi 
 
-Для подів (kubectl resource-top all pods):
- TYPE       | NAMESPACE                 | NAME                                     | CPU        | MEMORY -----------|---------------------------|------------------------------------------|------------|------------ pods       | default                   | nginx-676b6c5bbc-2czkk                   | 0m         | 12Mi pods       | kube-system               | coredns-ccb96694c-gjz48                  | 3m         | 19Mi pods       | kube-system               | local-path-provisioner-5cf85fd84d-xqtvc  | 1m         | 8Mi pods       | kube-system               | metrics-server-5985cbc9d7-jzd7j          | 5m         | 27Mi pods       | kube-system               | svclb-traefik-e21c9026-hgdf5             | 0m         | 0Mi pods       | kube-system               | traefik-5d45fc8cc9-5ctm8                 | 2m         | 42Mi 
+|TYPE       | NAMESPACE                 | NAME                                     | CPU        | MEMORY    |
+|-----------|---------------------------|------------------------------------------|------------|------------|
+|nodes      | <cluster>                 | k3d-k3s-default-server-0                 | 71m        | 729Mi     |
+
+Для подів (kubectl resource-top all pods): 
+
+|TYPE       | NAMESPACE                 | NAME                                     | CPU        | MEMORY    |
+|-----------|---------------------------|------------------------------------------|------------|------------|
+|pods       | default                   | nginx-676b6c5bbc-2czkk                   | 0m         | 12Mi      |
+|pods       | kube-system               | coredns-ccb96694c-gjz48                  | 3m         | 19Mi      |
+|pods       | kube-system               | local-path-provisioner-5cf85fd84d-xqtvc  | 1m         | 8Mi       |
+|pods       | kube-system               | metrics-server-5985cbc9d7-jzd7j          | 5m         | 27Mi      |
+|pods       | kube-system               | svclb-traefik-e21c9026-hgdf5             | 0m         | 0Mi       |
+|pods       | kube-system               | traefik-5d45fc8cc9-5ctm8                 | 2m         | 42Mi      |
 
 ### Приклад виводу (формат csv)
 
