@@ -1,0 +1,274 @@
+#!/bin/bash
+
+# Script to retrieve resource usage (CPU, Memory) from Kubernetes using 'kubectl top'.
+#
+# Usage: ./kubeplugin [-f <format>] [namespace_or_all_for_pods] <resource_type>
+#   -f <format>: Output format. 'csv' or 'console' (default).
+#   [namespace_or_all_for_pods]:
+#     - For 'pods': The Kubernetes namespace, or 'all' for all namespaces. (Required)
+#     - For 'nodes': This argument is optional and ignored if provided, as node metrics are cluster-wide.
+#   <resource_type>: 'pods' (or 'pod'), 'nodes' (or 'node').
+#
+# Example:
+#   ./kubeplugin default pods
+#   ./kubeplugin -f csv all pods
+#   ./kubeplugin nodes
+#   ./kubeplugin default nodes  # 'default' is ignored for the command
+#   ./kubeplugin -f console nodes # console is default
+#
+# Output Format (CSV): ResourceType,Namespace,Name,CPU,Memory
+# Output Format (Console): Tabular human-readable format (DEFAULT)
+
+# --- Configuration ---
+DEBUG_MODE="false"
+DEFAULT_OUTPUT_FORMAT="console"
+
+# --- Helper Functions ---
+debug_log() {
+  if [ "$DEBUG_MODE" == "true" ]; then
+    echo "DEBUG: $1" >&2
+  fi
+}
+
+print_usage() {
+  echo "Usage: $0 [-f <format>] [namespace_or_all_for_pods] <resource_type>"
+  echo ""
+  echo "Options:"
+  echo "  -f <format>      Output format. Supported: 'csv', 'console' (default)."
+  echo ""
+  echo "Arguments:"
+  echo "  [namespace_or_all_for_pods]:"
+  echo "                     - For 'pods': Specify the Kubernetes namespace (e.g., 'default') or 'all'. This is REQUIRED."
+  echo "                     - For 'nodes': This argument is optional. If provided, it's ignored for command execution"
+  echo "                                  as node metrics are inherently cluster-wide."
+  echo "  <resource_type>    The type of resource to query. Supported: 'pods' (or 'pod'),"
+  echo "                     'nodes' (or 'node')."
+  echo ""
+  echo "Examples:"
+  echo "  $0 default pods                 # Pods in 'default' namespace"
+  echo "  $0 -f csv all pods              # Pods in all namespaces, CSV format"
+  echo "  $0 nodes                        # All nodes in the cluster"
+  echo "  $0 default nodes                # All nodes (namespace 'default' is ignored for command)"
+  echo "  $0 -f console nodes             # All nodes, console format is default"
+  exit 1
+}
+
+# --- Argument Parsing and Validation ---
+OUTPUT_FORMAT="$DEFAULT_OUTPUT_FORMAT"
+
+# Parse options
+while getopts ":f:" opt; do
+  case $opt in
+    f)
+      OUTPUT_FORMAT="$OPTARG"
+      ;;
+    \?)
+      echo "Error: Invalid option -$OPTARG" >&2
+      print_usage
+      ;;
+    :)
+      echo "Error: Option -$OPTARG requires an argument." >&2
+      print_usage
+      ;;
+  esac
+done
+shift $((OPTIND-1)) # Remove parsed options
+
+# Validate output format
+if ! [[ "$OUTPUT_FORMAT" == "csv" || "$OUTPUT_FORMAT" == "console" ]]; then
+  echo "Error: Invalid output format '$OUTPUT_FORMAT'. Supported formats are 'csv' or 'console'." >&2
+  print_usage
+fi
+debug_log "Output format set to: $OUTPUT_FORMAT"
+
+# Positional arguments
+# Initialize variables for clarity
+NAMESPACE_ARG_INPUT=""      # Raw namespace argument from user
+RESOURCE_TYPE_ARG_INPUT=""  # Raw resource type argument from user
+
+ALL_NAMESPACES_MODE="false" # For kubectl -A flag (applies to pods)
+NAMESPACE=""                # For kubectl -n <namespace> flag (applies to pods)
+ACTUAL_RESOURCE_TYPE=""     # Normalized resource type ('pods' or 'nodes')
+NAMESPACE_FOR_DISPLAY=""    # Namespace to show in the output (e.g., specific ns, 'all', '<cluster>')
+
+
+if [ $# -eq 1 ]; then
+    # Only one positional argument. It must be the resource_type.
+    RESOURCE_TYPE_ARG_INPUT="$1"
+    NORMALIZED_RESOURCE_TYPE_ARG_INPUT=$(echo "$RESOURCE_TYPE_ARG_INPUT" | tr '[:upper:]' '[:lower:]')
+
+    if [[ "$NORMALIZED_RESOURCE_TYPE_ARG_INPUT" == "nodes" || "$NORMALIZED_RESOURCE_TYPE_ARG_INPUT" == "node" ]]; then
+        ACTUAL_RESOURCE_TYPE="nodes"
+        NAMESPACE_FOR_DISPLAY="<cluster>" # Nodes are cluster-wide
+        debug_log "Resource type is 'nodes'. Namespace argument was not provided (correct for nodes)."
+    elif [[ "$NORMALIZED_RESOURCE_TYPE_ARG_INPUT" == "pods" || "$NORMALIZED_RESOURCE_TYPE_ARG_INPUT" == "pod" ]]; then
+        echo "Error: Namespace or 'all' is required when resource type is 'pods'." >&2
+        print_usage
+    else
+        echo "Error: Invalid resource type '$RESOURCE_TYPE_ARG_INPUT'." >&2
+        print_usage
+    fi
+elif [ $# -eq 2 ]; then
+    # Two positional arguments. $1 is namespace_or_all, $2 is resource_type.
+    NAMESPACE_ARG_INPUT="$1"
+    RESOURCE_TYPE_ARG_INPUT="$2"
+    NORMALIZED_RESOURCE_TYPE_ARG_INPUT=$(echo "$RESOURCE_TYPE_ARG_INPUT" | tr '[:upper:]' '[:lower:]')
+
+    if [[ "$NORMALIZED_RESOURCE_TYPE_ARG_INPUT" == "nodes" || "$NORMALIZED_RESOURCE_TYPE_ARG_INPUT" == "node" ]]; then
+        ACTUAL_RESOURCE_TYPE="nodes"
+        NAMESPACE_FOR_DISPLAY="<cluster>" # Node metrics are cluster-wide
+        debug_log "Resource type is 'nodes'. Namespace argument '$NAMESPACE_ARG_INPUT' is ignored for kubectl command execution."
+    elif [[ "$NORMALIZED_RESOURCE_TYPE_ARG_INPUT" == "pods" || "$NORMALIZED_RESOURCE_TYPE_ARG_INPUT" == "pod" ]]; then
+        ACTUAL_RESOURCE_TYPE="pods"
+        NORMALIZED_NAMESPACE_ARG_INPUT=$(echo "$NAMESPACE_ARG_INPUT" | tr '[:upper:]' '[:lower:]')
+        if [ "$NORMALIZED_NAMESPACE_ARG_INPUT" == "all" ]; then
+            ALL_NAMESPACES_MODE="true" # This will trigger -A for kubectl
+            NAMESPACE_FOR_DISPLAY="all"
+            debug_log "Querying all namespaces for pods."
+        else
+            NAMESPACE="$NAMESPACE_ARG_INPUT" # This will trigger -n $NAMESPACE for kubectl
+            NAMESPACE_FOR_DISPLAY="$NAMESPACE_ARG_INPUT"
+            debug_log "Querying specific namespace for pods: $NAMESPACE"
+        fi
+    else
+        echo "Error: Invalid resource type '$RESOURCE_TYPE_ARG_INPUT'." >&2
+        print_usage
+    fi
+else
+    echo "Error: Incorrect number of arguments. Expected 1 or 2 positional arguments." >&2
+    print_usage
+fi
+
+# Final check for ACTUAL_RESOURCE_TYPE (should be set if execution reaches here)
+if [ -z "$ACTUAL_RESOURCE_TYPE" ]; then
+    echo "Internal Error: Resource type could not be determined. This should not happen." >&2
+    print_usage # Exit
+fi
+
+debug_log "Determined ACTUAL_RESOURCE_TYPE: $ACTUAL_RESOURCE_TYPE"
+debug_log "Determined NAMESPACE (for -n flag with pods): '$NAMESPACE'"
+debug_log "Determined ALL_NAMESPACES_MODE (for -A flag with pods): $ALL_NAMESPACES_MODE"
+debug_log "Determined NAMESPACE_FOR_DISPLAY: $NAMESPACE_FOR_DISPLAY"
+
+
+# --- Main Logic ---
+
+# Prepare kubectl command
+kubectl_command_array=(kubectl top "$ACTUAL_RESOURCE_TYPE")
+
+if [ "$ACTUAL_RESOURCE_TYPE" == "pods" ]; then
+  if [ "$ALL_NAMESPACES_MODE" == "true" ]; then
+    kubectl_command_array+=("-A")
+  else
+    # For specific namespace pods, NAMESPACE variable must be set.
+    if [ -z "$NAMESPACE" ]; then
+        echo "Internal Error: Namespace variable not set for specific pod query. This should be caught earlier." >&2
+        exit 1
+    fi
+    kubectl_command_array+=("-n" "$NAMESPACE")
+  fi
+elif [ "$ACTUAL_RESOURCE_TYPE" == "nodes" ]; then
+  # No namespace or -A flag for 'kubectl top nodes' as it's always cluster-wide.
+   : # Explicitly do nothing to add namespace flags
+fi
+kubectl_command_array+=("--no-headers=true")
+
+debug_log "Executing command: ${kubectl_command_array[*]}"
+
+# Temporary file to capture stderr from kubectl
+kubectl_stderr_capture=$(mktemp)
+
+# Execute kubectl command
+kubectl_stdout_capture=$("${kubectl_command_array[@]}" 2> "$kubectl_stderr_capture")
+kubectl_exit_status=$?
+
+# Check if kubectl command failed
+if [ $kubectl_exit_status -ne 0 ]; then
+  echo "Error: kubectl command failed with exit status $kubectl_exit_status." >&2
+  if [ -s "$kubectl_stderr_capture" ]; then
+    echo "--- kubectl error output ---" >&2
+    cat "$kubectl_stderr_capture" >&2
+    echo "----------------------------" >&2
+  else
+    echo "kubectl command produced no specific error output to stderr, but failed." >&2
+  fi
+  rm -f "$kubectl_stderr_capture"
+  exit 1
+fi
+rm -f "$kubectl_stderr_capture" # Clean up temp file
+
+# Print headers based on output format
+if [ "$OUTPUT_FORMAT" == "csv" ]; then
+  echo "ResourceType,Namespace,Name,CPU,Memory"
+elif [ "$OUTPUT_FORMAT" == "console" ]; then
+  printf "%-10s | %-25s | %-40s | %-10s | %-10s\n" "TYPE" "NAMESPACE" "NAME" "CPU" "MEMORY"
+  printf "%s\n" "-----------|---------------------------|------------------------------------------|------------|------------"
+fi
+
+# Process the output
+if [ -z "$kubectl_stdout_capture" ]; then
+  if [ "$ACTUAL_RESOURCE_TYPE" == "nodes" ]; then
+    debug_log "No $ACTUAL_RESOURCE_TYPE found in the cluster, or 'kubectl top' returned no data."
+  elif [ "$ALL_NAMESPACES_MODE" == "true" ]; then # This applies to pods
+    debug_log "No $ACTUAL_RESOURCE_TYPE found across all namespaces, or 'kubectl top' returned no data."
+  else # This applies to pods in a specific namespace
+    debug_log "No $ACTUAL_RESOURCE_TYPE found in namespace '$NAMESPACE_FOR_DISPLAY', or 'kubectl top' returned no data."
+  fi
+else
+  echo "$kubectl_stdout_capture" | while IFS= read -r line; do
+    if [ -z "$line" ]; then
+      continue
+    fi
+
+    # Variables to hold parsed data
+    current_ns_from_line="" # For pods -A, namespace is in the line
+    current_name=""
+    current_cpu=""
+    current_memory=""
+
+    if [ "$ACTUAL_RESOURCE_TYPE" == "pods" ]; then
+      if [ "$ALL_NAMESPACES_MODE" == "true" ]; then
+        # Pods with --all-namespaces: NAMESPACE NAME CPU MEMORY
+        current_ns_from_line=$(awk '{print $1}' <<< "$line")
+        current_name=$(awk '{print $2}' <<< "$line")
+        current_cpu=$(awk '{print $3}' <<< "$line")
+        current_memory=$(awk '{print $4}' <<< "$line")
+      else
+        # Pods with specific namespace: NAME CPU MEMORY
+        # current_ns_from_line remains empty, NAMESPACE_FOR_DISPLAY will be used
+        current_name=$(awk '{print $1}' <<< "$line")
+        current_cpu=$(awk '{print $2}' <<< "$line")
+        current_memory=$(awk '{print $3}' <<< "$line")
+      fi
+    elif [ "$ACTUAL_RESOURCE_TYPE" == "nodes" ]; then
+      # Nodes: NAME CPU(cores) CPU% MEMORY(bytes) MEMORY%
+      # current_ns_from_line remains empty, NAMESPACE_FOR_DISPLAY will be used (which is <cluster>)
+      current_name=$(awk '{print $1}' <<< "$line")
+      current_cpu=$(awk '{print $2}' <<< "$line")    # CPU(cores)
+      current_memory=$(awk '{print $4}' <<< "$line") # MEMORY(bytes)
+    fi
+
+    # Determine the namespace to display
+    display_ns=""
+    if [ -n "$current_ns_from_line" ]; then # If namespace was parsed from the line (pods -A)
+        display_ns="$current_ns_from_line"
+    else # Otherwise, use the globally determined NAMESPACE_FOR_DISPLAY
+        display_ns="$NAMESPACE_FOR_DISPLAY"
+    fi
+
+    # Output based on format
+    if [ "$OUTPUT_FORMAT" == "csv" ]; then
+      echo "$ACTUAL_RESOURCE_TYPE,$display_ns,$current_name,$current_cpu,$current_memory"
+    elif [ "$OUTPUT_FORMAT" == "console" ]; then
+      printf "%-10s | %-25s | %-40s | %-10s | %-10s\n" \
+        "$ACTUAL_RESOURCE_TYPE" \
+        "$display_ns" \
+        "$current_name" \
+        "$current_cpu" \
+        "$current_memory"
+    fi
+  done
+fi
+
+debug_log "Script finished successfully."
+exit 0
